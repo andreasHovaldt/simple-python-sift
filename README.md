@@ -5,8 +5,8 @@ Inspired by the initial steps of structure from motion.
 # Getting Started
 
 ### Dependencies
-numpy, matplotlib, opencv-python, 
-
+numpy, matplotlib, opencv-python, etc....
+```pip install -r requirements.txt```
 
 ### Installation
 ***sock it***
