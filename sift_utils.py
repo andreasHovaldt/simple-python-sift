@@ -1,12 +1,20 @@
+########################################################################################
+### Heavily inspired by: https://github.com/rmislam/PythonSIFT/blob/master/pysift.py ###
+########################################################################################
+
 import numpy as np
 import matplotlib.pyplot as plt
 import cv2
 import math
 
 
-#########################
-# Image pyramid related #
-#########################
+
+###################################################################################
+######             1 - Scale-space extrema detection - Section 3              #####
+# The first stage of computation searches over all scales and image locations.    #
+# It is implemented efficiently by using a difference-of-Gaussian function to     #
+# identify potential interest points that are invariant to scale and orientation. #
+###################################################################################
 
 def image_preprocessing(image: np.ndarray, sigma=1.6, assumed_sigma=0.5) -> np.ndarray:
     # Based on section 3.3
@@ -109,7 +117,7 @@ def construct_gaussian_pyramid(image: np.ndarray, num_octaves: int, gaussian_ker
     gaussian_pyramid = []
     
     # Go through each octave
-    for octave_n in range(num_octaves):
+    for _ in range(num_octaves):
         octave_stack = []
         octave_stack.append(image) # The first image has already been blurred (see "image_preprocessing()"")
         
@@ -185,9 +193,136 @@ def construct_DoG_pyramid(gaussian_pyramid: np.ndarray):
 
 
 
-###############################
-# Scale-space extrema related #
-###############################
+
+########################################################################################
+#####                   2 - Keypoint localization - Section 3/4                    #####
+# At each candidate location, a detailed model is fit to determine location and scale. #
+# Keypoints are selected based on measures of their stability.                         #
+########################################################################################
+
+def is_pixel_extremum(first_subimage: np.ndarray, second_subimage: np.ndarray, third_subimage: np.ndarray, threshold: float) -> bool:
+    """Return True if the center element of the 3x3x3 input array is strictly greater than or less than all its neighbors, False otherwise
+
+    Args:
+        first_subimage (np.ndarray): First subimage
+        second_subimage (np.ndarray): Second subimage
+        third_subimage (np.ndarray): Third subimage
+        threshold (float): Threshold value for pixel to be considered an extremum
+
+    Returns:
+        bool: Whether the pixel was strictly greater or less than all its neighbors.
+    """
+    # Set the center pixel value
+    center_pixel_value = second_subimage[1, 1]
+    
+    # Check if the center pixel value is greater than the threshold
+    if abs(center_pixel_value) > threshold:
+        
+        # Check if the center pixel value is greater than than all its neighbors
+        if center_pixel_value > 0:
+            return np.all(center_pixel_value >= first_subimage) and \
+                   np.all(center_pixel_value >= third_subimage) and \
+                   np.all(center_pixel_value >= second_subimage[0, :]) and \
+                   np.all(center_pixel_value >= second_subimage[2, :]) and \
+                   center_pixel_value >= second_subimage[1, 0] and \
+                   center_pixel_value >= second_subimage[1, 2]
+                   
+        # Check if the center pixel value is less than all its neighbors
+        elif center_pixel_value < 0:
+            return np.all(center_pixel_value <= first_subimage) and \
+                   np.all(center_pixel_value <= third_subimage) and \
+                   np.all(center_pixel_value <= second_subimage[0, :]) and \
+                   np.all(center_pixel_value <= second_subimage[2, :]) and \
+                   center_pixel_value <= second_subimage[1, 0] and \
+                   center_pixel_value <= second_subimage[1, 2]
+    return False
+
+
+def get_center_pixel_gradient(pixel_array: np.ndarray) -> np.ndarray:
+    """Compute the gradient at the center pixel of a 3x3x3 array using the central difference formula of order O(h^2).
+    
+    Args:
+        pixel_array (np.ndarray): A 3x3x3 array representing pixel values.
+    
+    Returns:
+        np.ndarray: A 1D array containing the gradients [dx, dy, ds] along the x, y, s axes, respectively.
+        
+    Notes:
+        Taken from https://github.com/rmislam/PythonSIFT/blob/master/pysift.py
+    """
+    
+    # Approximate gradient at center pixel [1, 1, 1] of 3x3x3 array using central difference formula of order O(h^2), where h is the step size
+    # With step size h, the central difference formula of order O(h^2) for f'(x) is (f(x + h) - f(x - h)) / (2 * h)
+    # Here h = 1, so the formula simplifies to f'(x) = (f(x + 1) - f(x - 1)) / 2
+    # NOTE: x corresponds to second array axis, y corresponds to first array axis, and s (scale) corresponds to third array axis
+    dx = 0.5 * (pixel_array[1, 1, 2] - pixel_array[1, 1, 0])
+    dy = 0.5 * (pixel_array[1, 2, 1] - pixel_array[1, 0, 1])
+    ds = 0.5 * (pixel_array[2, 1, 1] - pixel_array[0, 1, 1])
+    return np.array([dx, dy, ds])
+
+
+def get_center_pixel_hessian(pixel_array: np.ndarray) -> np.ndarray:
+    """
+    Compute the Hessian matrix at the center pixel of a 3x3x3 array using the central difference formula of order O(h^2).
+    
+    Args:
+        pixel_array (np.ndarray): A 3x3x3 array representing pixel values.
+    
+    Returns:
+        np.ndarray: A 3x3 Hessian matrix computed at the center pixel [1, 1, 1].
+        
+    Notes:
+        Taken from https://github.com/rmislam/PythonSIFT/blob/master/pysift.py
+    
+        The Hessian matrix is computed as follows:
+        [dxx, dxy, dxs]
+        [dxy, dyy, dys]
+        [dxs, dys, dss]
+    """
+    
+    # Approximate Hessian at center pixel [1, 1, 1] of 3x3x3 array using central difference formula of order O(h^2), where h is the step size
+    # With step size h, the central difference formula of order O(h^2) for f''(x) is (f(x + h) - 2 * f(x) + f(x - h)) / (h ^ 2)
+    # Here h = 1, so the formula simplifies to f''(x) = f(x + 1) - 2 * f(x) + f(x - 1)
+    # With step size h, the central difference formula of order O(h^2) for (d^2) f(x, y) / (dx dy) = (f(x + h, y + h) - f(x + h, y - h) - f(x - h, y + h) + f(x - h, y - h)) / (4 * h ^ 2)
+    # Here h = 1, so the formula simplifies to (d^2) f(x, y) / (dx dy) = (f(x + 1, y + 1) - f(x + 1, y - 1) - f(x - 1, y + 1) + f(x - 1, y - 1)) / 4
+    # NOTE: x corresponds to second array axis, y corresponds to first array axis, and s (scale) corresponds to third array axis
+    
+    # Compute the second-order partial derivatives
+    center_pixel_value = pixel_array[1, 1, 1]
+    dxx = pixel_array[1, 1, 2] - 2 * center_pixel_value + pixel_array[1, 1, 0]
+    dyy = pixel_array[1, 2, 1] - 2 * center_pixel_value + pixel_array[1, 0, 1]
+    dss = pixel_array[2, 1, 1] - 2 * center_pixel_value + pixel_array[0, 1, 1]
+    dxy = 0.25 * (pixel_array[1, 2, 2] - pixel_array[1, 2, 0] - pixel_array[1, 0, 2] + pixel_array[1, 0, 0])
+    dxs = 0.25 * (pixel_array[2, 1, 2] - pixel_array[2, 1, 0] - pixel_array[0, 1, 2] + pixel_array[0, 1, 0])
+    dys = 0.25 * (pixel_array[2, 2, 1] - pixel_array[2, 0, 1] - pixel_array[0, 2, 1] + pixel_array[0, 0, 1])
+    
+    return np.array([[dxx, dxy, dxs], 
+                     [dxy, dyy, dys],
+                     [dxs, dys, dss]])
+
+
+def accurate_keypoint_localization(): # FIXME:
+    # Secton 4 - Accurate keypoint localization
+    # Fit a 3D quadratic function to the local sample points to determine the interpolated location of the extremum
+    # Enables algorithm to localize sub-pixel extremum locations, which can then be broadcast back to the discrete image space.
+    
+    
+    return None
+
+
+def get_scale_space_extrema(s=3, contrast_threshold=0.04): # FIXME:
+    # Accurate keypoint localization, section 4 of the paper
+    # s -> number of intervals
+    
+    threshold = np.floor(0.5 * contrast_threshold / s * 255)
+    keypoints = []
+    
+    return keypoints
+
+
+
+
+
 
 
 
@@ -197,24 +332,28 @@ def construct_DoG_pyramid(gaussian_pyramid: np.ndarray):
 
 
 if __name__ == "__main__":
-    box = cv2.imread('/home/dreezy/azureDev/repos/ipcv-mini-project/box.png', 0)
+    # box = cv2.imread('/home/dreezy/azureDev/repos/ipcv-mini-project/box.png', 0)
     
-    image = box.astype('float32')
-    base_image = image_preprocessing(box)
+    # image = box.astype('float32')
+    # base_image = image_preprocessing(box)
     
     
-    n_octaves = get_num_octaves(base_image.shape[:2])
-    print(f"n_octaves {n_octaves}")
+    # n_octaves = get_num_octaves(base_image.shape[:2])
+    # print(f"n_octaves {n_octaves}")
     
-    g_kernels = get_gaussian_kernels()
-    print(f"gaussian kernels: {g_kernels}")
+    # g_kernels = get_gaussian_kernels()
+    # print(f"gaussian kernels: {g_kernels}")
     
-    g_pyramid = construct_gaussian_pyramid(base_image, n_octaves, g_kernels)
-    print(f"pyramid lengths: {len(g_pyramid)}, {len(g_pyramid[0])}")
-    print(g_pyramid[7][4].shape)
+    # g_pyramid = construct_gaussian_pyramid(base_image, n_octaves, g_kernels)
+    # print(f"pyramid lengths: {len(g_pyramid)}, {len(g_pyramid[0])}")
+    # print(g_pyramid[7][4].shape)
     
-    dog_pyramid = construct_DoG_pyramid(g_pyramid)
-    print(f"dog lengths: {len(dog_pyramid)}, {len(dog_pyramid[0])}")
-    print(dog_pyramid[5][2].shape)
+    # dog_pyramid = construct_DoG_pyramid(g_pyramid)
+    # print(f"dog lengths: {len(dog_pyramid)}, {len(dog_pyramid[0])}")
+    # print(dog_pyramid[5][2].shape)
+    
+    list = [1,2,3,4,5]
+    for x,y,z in zip(list[:-2], list[1:-1], list[2:], strict=True):
+        print(x,y,z)
     
     
