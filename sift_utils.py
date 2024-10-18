@@ -214,7 +214,7 @@ def plot_gaussian_pyramid(gaussian_pyramid: np.ndarray, save_path=None):
     
     
 ########################################################################################
-#####                  2 - Keypoint localization - Section 3/4/5                   #####
+#####                   2 - Keypoint localization - Section 3/4                    #####
 # At each candidate location, a detailed model is fit to determine location and scale. #
 # Keypoints are selected based on measures of their stability.                         #
 ########################################################################################
@@ -405,7 +405,7 @@ def accurate_keypoint_localization(center_y: int, center_x: int, image_idx: int,
             break
         
         # Extremum doesn't lie closest to the current center pixel, thus we update the center pixel for the next iteration
-        center_x, center_y, image_idx = int(round(extremum_update[0])), int(round(extremum_update[1])), int(round(extremum_update[2]))
+        center_x, center_y, image_idx = int(np.round(extremum_update[0])), int(np.round(extremum_update[1])), int(np.round(extremum_update[2]))
         
         # Check if the new center pixel is within the image
         if (center_y < image_border_width or center_y >= image_shape[0] - image_border_width 
@@ -448,7 +448,7 @@ def accurate_keypoint_localization(center_y: int, center_x: int, image_idx: int,
             keypoint.pt = ((center_x + extremum_update[0]) * (2 ** octave_idx), (center_y + extremum_update[1]) * (2 ** octave_idx))
             
             # opencv docs: Octave (pyramid layer) from which the keypoint has been extracted 
-            keypoint.octave = octave_idx + image_idx * (2 ** 8) + int(round((extremum_update[2] + 0.5) * 255)) * (2 ** 16)
+            keypoint.octave = octave_idx + image_idx * (2 ** 8) + int(np.round((extremum_update[2] + 0.5) * 255)) * (2 ** 16)
             
             # opencv docs: Diameter of the meaningful keypoint neighborhood 
             # Computing the absolute scale of the keypoint
@@ -514,6 +514,16 @@ def get_scale_space_extrema(gaussian_images, dog_images, s, sigma, image_border_
     return keypoints
 
 
+
+#########################################################################################
+#####                    3 - Orientation assignment - Section 5                     #####
+# One or more orientations are assigned to each keypoint location based on local image  #
+# gradient directions. All future operations are performed on image data that has been  #
+# transformed relative to the assigned orientation, scale, and location for each        #
+# feature, thereby providing invariance to these transformations.                       #
+#########################################################################################
+
+
 def orientation_assignment(keypoint: cv2.KeyPoint, octave_idx: int, gaussian_image: np.ndarray, radius_factor=3, num_bins=36, peak_ratio=0.8, scale_factor=1.5):
     """Assigns orientation(s) to a keypoint based on the local image gradient directions.
     Parameters:
@@ -543,7 +553,7 @@ def orientation_assignment(keypoint: cv2.KeyPoint, octave_idx: int, gaussian_ima
 
     # The radius determines the region around the keypoint to be considered for orientation calculation.
     # The radius is based on the scale of the keypoint and a factor (typically 3, but not described in the paper).
-    radius = int(round(radius_factor * scale))
+    radius = int(np.round(radius_factor * scale))
 
     # The weight factor is used to compute a Gaussian weight for each pixel in the region,
     # prioritizing pixels closer to the keypoint center. This helps give more importance to gradients near the keypoint.
@@ -560,13 +570,13 @@ def orientation_assignment(keypoint: cv2.KeyPoint, octave_idx: int, gaussian_ima
     # Loop over the neighborhood around the keypoint (based on the radius) to compute gradient magnitudes and orientations.
     for i in range(-radius, radius + 1):
         # Calculate the y-coordinate in the scale space (adjust for the current octave).
-        region_y = int(round(keypoint.pt[1] / np.float32(2 ** octave_idx))) + i
+        region_y = int(np.round(keypoint.pt[1] / np.float32(2 ** octave_idx))) + i
 
         # Ensure the y-coordinate is within the image bounds.
         if region_y > 0 and region_y < image_shape[0] - 1:
             for j in range(-radius, radius + 1):
                 # Calculate the x-coordinate in the scale space (adjust for the current octave).
-                region_x = int(round(keypoint.pt[0] / np.float32(2 ** octave_idx))) + j
+                region_x = int(np.round(keypoint.pt[0] / np.float32(2 ** octave_idx))) + j
                 
                 # Ensure the x-coordinate is within the image bounds.
                 if region_x > 0 and region_x < image_shape[1] - 1:
@@ -587,7 +597,7 @@ def orientation_assignment(keypoint: cv2.KeyPoint, octave_idx: int, gaussian_ima
                     weight = np.exp(weight_factor * (i ** 2 + j ** 2))
                     
                     # Map the gradient orientation into one of the histogram bins (36 bins for 360 degrees).
-                    histogram_index = int(round(gradient_orientation * num_bins / 360.))
+                    histogram_index = int(np.round(gradient_orientation * num_bins / 360.))
                     
                     # Add the weighted gradient magnitude to the corresponding histogram bin.
                     raw_histogram[histogram_index % num_bins] += weight * gradient_magnitude
@@ -646,6 +656,180 @@ def orientation_assignment(keypoint: cv2.KeyPoint, octave_idx: int, gaussian_ima
     return keypoints_with_orientations
 
 
+##############################
+# Duplicate keypoint removal #
+##############################
+
+def compareKeypoints(keypoint1: cv2.KeyPoint, keypoint2: cv2.KeyPoint):
+    """Return True if keypoint1 is less than keypoint2
+    """
+    if keypoint1.pt[0] != keypoint2.pt[0]:
+        return keypoint1.pt[0] - keypoint2.pt[0]
+    if keypoint1.pt[1] != keypoint2.pt[1]:
+        return keypoint1.pt[1] - keypoint2.pt[1]
+    if keypoint1.size != keypoint2.size:
+        return keypoint2.size - keypoint1.size
+    if keypoint1.angle != keypoint2.angle:
+        return keypoint1.angle - keypoint2.angle
+    if keypoint1.response != keypoint2.response:
+        return keypoint2.response - keypoint1.response
+    if keypoint1.octave != keypoint2.octave:
+        return keypoint2.octave - keypoint1.octave
+    return keypoint2.class_id - keypoint1.class_id
+
+def removeDuplicateKeypoints(keypoints: list[cv2.KeyPoint]):
+    """Sort keypoints and remove duplicate keypoints
+    """
+    import functools
+    
+    if len(keypoints) < 2:
+        return keypoints
+
+    keypoints.sort(key=functools.cmp_to_key(compareKeypoints))
+    unique_keypoints = [keypoints[0]]
+
+    for next_keypoint in keypoints[1:]:
+        next_keypoint: cv2.KeyPoint
+        last_unique_keypoint = unique_keypoints[-1]
+        if last_unique_keypoint.pt[0] != next_keypoint.pt[0] or \
+           last_unique_keypoint.pt[1] != next_keypoint.pt[1] or \
+           last_unique_keypoint.size != next_keypoint.size or \
+           last_unique_keypoint.angle != next_keypoint.angle:
+            unique_keypoints.append(next_keypoint)
+    return unique_keypoints
+
+#############################
+# Keypoint scale conversion #
+#############################
+
+def convertKeypointsToInputImageSize(keypoints: list[cv2.KeyPoint]):
+    """Convert keypoint point, size, and octave to input image size
+    """
+    converted_keypoints = []
+    for keypoint in keypoints:
+        keypoint: cv2.KeyPoint
+        keypoint.pt = tuple(0.5 * np.array(keypoint.pt))
+        keypoint.size *= 0.5
+        keypoint.octave = (keypoint.octave & ~255) | ((keypoint.octave - 1) & 255)
+        converted_keypoints.append(keypoint)
+    return converted_keypoints
+
+
+########################################################################################
+#####                  4 - Keypoint descriptor - Section 6                         #####
+#                                                                                      #
+########################################################################################
+
+def unpackOctave(keypoint: cv2.KeyPoint):
+    """Compute octave, layer, and scale from a keypoint
+    """
+    octave = keypoint.octave & 255
+    layer = (keypoint.octave >> 8) & 255
+    if octave >= 128:
+        octave = octave | -128
+    scale = 1 / np.float32(1 << octave) if octave >= 0 else np.float32(1 << -octave)
+    return octave, layer, scale
+
+def generateDescriptors(keypoints: list[cv2.KeyPoint], gaussian_images: np.ndarray, window_width=4, num_bins=8, scale_multiplier=3, descriptor_max_value=0.2):
+    """Generate descriptors for each keypoint
+    """
+
+    descriptors = []
+
+    for keypoint in keypoints:
+        octave, layer, scale = unpackOctave(keypoint)
+        gaussian_image = gaussian_images[octave + 1, layer]
+        num_rows, num_cols = gaussian_image.shape
+        point = np.round(scale * np.array(keypoint.pt)).astype('int')
+        bins_per_degree = num_bins / 360.
+        angle = 360. - keypoint.angle
+        cos_angle = np.cos(np.deg2rad(angle))
+        sin_angle = np.sin(np.deg2rad(angle))
+        weight_multiplier = -0.5 / ((0.5 * window_width) ** 2)
+        row_bin_list = []
+        col_bin_list = []
+        magnitude_list = []
+        orientation_bin_list = []
+        histogram_tensor = np.zeros((window_width + 2, window_width + 2, num_bins))   # first two dimensions are increased by 2 to account for border effects
+
+        # Descriptor window size (described by half_width) follows OpenCV convention
+        hist_width = scale_multiplier * 0.5 * scale * keypoint.size
+        half_width = int(np.round(hist_width * np.sqrt(2) * (window_width + 1) * 0.5))   # sqrt(2) corresponds to diagonal length of a pixel
+        half_width = int(min(half_width, np.sqrt(num_rows ** 2 + num_cols ** 2)))     # ensure half_width lies within image
+
+        for row in range(-half_width, half_width + 1):
+            for col in range(-half_width, half_width + 1):
+                row_rot = col * sin_angle + row * cos_angle
+                col_rot = col * cos_angle - row * sin_angle
+                row_bin = (row_rot / hist_width) + 0.5 * window_width - 0.5
+                col_bin = (col_rot / hist_width) + 0.5 * window_width - 0.5
+                if row_bin > -1 and row_bin < window_width and col_bin > -1 and col_bin < window_width:
+                    window_row = int(np.round(point[1] + row))
+                    window_col = int(np.round(point[0] + col))
+                    if window_row > 0 and window_row < num_rows - 1 and window_col > 0 and window_col < num_cols - 1:
+                        dx = gaussian_image[window_row, window_col + 1] - gaussian_image[window_row, window_col - 1]
+                        dy = gaussian_image[window_row - 1, window_col] - gaussian_image[window_row + 1, window_col]
+                        gradient_magnitude = np.sqrt(dx * dx + dy * dy)
+                        gradient_orientation = np.rad2deg(np.arctan2(dy, dx)) % 360
+                        weight = np.exp(weight_multiplier * ((row_rot / hist_width) ** 2 + (col_rot / hist_width) ** 2))
+                        row_bin_list.append(row_bin)
+                        col_bin_list.append(col_bin)
+                        magnitude_list.append(weight * gradient_magnitude)
+                        orientation_bin_list.append((gradient_orientation - angle) * bins_per_degree)
+
+        for row_bin, col_bin, magnitude, orientation_bin in zip(row_bin_list, col_bin_list, magnitude_list, orientation_bin_list):
+            # Smoothing via trilinear interpolation
+            # Notations follows https://en.wikipedia.org/wiki/Trilinear_interpolation
+            # Note that we are really doing the inverse of trilinear interpolation here (we take the center value of the cube and distribute it among its eight neighbors)
+            row_bin_floor, col_bin_floor, orientation_bin_floor = np.floor([row_bin, col_bin, orientation_bin]).astype(int)
+            row_fraction, col_fraction, orientation_fraction = row_bin - row_bin_floor, col_bin - col_bin_floor, orientation_bin - orientation_bin_floor
+            if orientation_bin_floor < 0:
+                orientation_bin_floor += num_bins
+            if orientation_bin_floor >= num_bins:
+                orientation_bin_floor -= num_bins
+
+            c1 = magnitude * row_fraction
+            c0 = magnitude * (1 - row_fraction)
+            c11 = c1 * col_fraction
+            c10 = c1 * (1 - col_fraction)
+            c01 = c0 * col_fraction
+            c00 = c0 * (1 - col_fraction)
+            c111 = c11 * orientation_fraction
+            c110 = c11 * (1 - orientation_fraction)
+            c101 = c10 * orientation_fraction
+            c100 = c10 * (1 - orientation_fraction)
+            c011 = c01 * orientation_fraction
+            c010 = c01 * (1 - orientation_fraction)
+            c001 = c00 * orientation_fraction
+            c000 = c00 * (1 - orientation_fraction)
+
+            histogram_tensor[row_bin_floor + 1, col_bin_floor + 1, orientation_bin_floor] += c000
+            histogram_tensor[row_bin_floor + 1, col_bin_floor + 1, (orientation_bin_floor + 1) % num_bins] += c001
+            histogram_tensor[row_bin_floor + 1, col_bin_floor + 2, orientation_bin_floor] += c010
+            histogram_tensor[row_bin_floor + 1, col_bin_floor + 2, (orientation_bin_floor + 1) % num_bins] += c011
+            histogram_tensor[row_bin_floor + 2, col_bin_floor + 1, orientation_bin_floor] += c100
+            histogram_tensor[row_bin_floor + 2, col_bin_floor + 1, (orientation_bin_floor + 1) % num_bins] += c101
+            histogram_tensor[row_bin_floor + 2, col_bin_floor + 2, orientation_bin_floor] += c110
+            histogram_tensor[row_bin_floor + 2, col_bin_floor + 2, (orientation_bin_floor + 1) % num_bins] += c111
+
+        descriptor_vector = histogram_tensor[1:-1, 1:-1, :].flatten()  # Remove histogram borders
+        # Threshold and normalize descriptor_vector
+        threshold = np.linalg.norm(descriptor_vector) * descriptor_max_value
+        descriptor_vector[descriptor_vector > threshold] = threshold
+        descriptor_vector /= max(np.linalg.norm(descriptor_vector), float_tolerance)
+        # Multiply by 512, np.round, and saturate between 0 and 255 to convert from float32 to unsigned char (OpenCV convention)
+        descriptor_vector = np.round(512 * descriptor_vector)
+        descriptor_vector[descriptor_vector < 0] = 0
+        descriptor_vector[descriptor_vector > 255] = 255
+        descriptors.append(descriptor_vector)
+    return np.array(descriptors, dtype='float32')
+
+
+
+
+
+
+
 
 
 
@@ -674,7 +858,7 @@ if __name__ == "__main__":
     print(f"pyramid lengths: {len(g_pyramid)}, {len(g_pyramid[0])}")
     print(g_pyramid[7][4].shape)
     
-    plot_gaussian_pyramid(g_pyramid, save_path="resources/gaussian_pyramid.png")
+    # plot_gaussian_pyramid(g_pyramid, save_path="resources/gaussian_pyramid.png")
     
     # print("g_pyramid ", g_pyramid[0][1][2])
     # print("g_pyramid ", g_pyramid[0][1].shape)
@@ -685,7 +869,7 @@ if __name__ == "__main__":
     print(f"dog lengths: {len(dog_pyramid)}, {len(dog_pyramid[0])}")
     print(dog_pyramid[5][2].shape)
     
-    plot_gaussian_pyramid(dog_pyramid, save_path="resources/dog_pyramid.png")
+    # plot_gaussian_pyramid(dog_pyramid, save_path="resources/dog_pyramid.png")
     
     # print("dog_image ", dog_pyramid[0][1][2])
     # print("dog_image ", dog_pyramid[0][1].shape)
@@ -695,6 +879,7 @@ if __name__ == "__main__":
     keys_w_orients = get_scale_space_extrema(g_pyramid, dog_pyramid, s, sigma=sigma, image_border_width=3)
     print(len(keys_w_orients))
     print(keys_w_orients[0])
+    
     
     box_copy = cv2.cvtColor(box.copy(), cv2.COLOR_GRAY2BGR)
     
