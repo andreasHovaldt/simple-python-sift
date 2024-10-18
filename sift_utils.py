@@ -8,7 +8,8 @@ import matplotlib.pyplot as plt
 import cv2
 import math
 
-
+float_tolerance = 1e-7
+counter = 0
 
 ###################################################################################
 ######             1 - Scale-space extrema detection - Section 3              #####
@@ -422,11 +423,21 @@ def accurate_keypoint_localization(center_y: int, center_x: int, image_idx: int,
         if determinant_H > 0 and r * (trace_H ** 2) < ((r + 1) ** 2) * determinant_H:
             
             # Taken from https://github.com/rmislam/PythonSIFT/blob/master/pysift.py#L177, used to make it compatible with cv2
-            # Contrash check passed -- construct and return OpenCV KeyPoint object
+            
+            # Contrast check passed -- construct and return OpenCV KeyPoint object
             keypoint = cv2.KeyPoint()
+            
+            # opencv docs: Coordinates of the keypoints 
             keypoint.pt = ((center_x + extremum_update[0]) * (2 ** octave_idx), (center_y + extremum_update[1]) * (2 ** octave_idx))
+            
+            # opencv docs: Octave (pyramid layer) from which the keypoint has been extracted 
             keypoint.octave = octave_idx + image_idx * (2 ** 8) + int(round((extremum_update[2] + 0.5) * 255)) * (2 ** 16)
+            
+            # opencv docs: Diameter of the meaningful keypoint neighborhood 
+            # Computing the absolute scale of the keypoint
             keypoint.size = sigma * (2 ** ((image_idx + extremum_update[2]) / np.float32(s))) * (2 ** (octave_idx + 1))  # octave_index + 1 because the input image was doubled
+            
+            # opencv docs: The response by which the most strong keypoints have been selected. Can be used for the further sorting or subsampling 
             keypoint.response = abs(function_value_at_extremum)
             
             # Return the keypoint and the image index
@@ -458,21 +469,31 @@ def get_scale_space_extrema(gaussian_images, dog_images, s, sigma, image_border_
             for center_y in range(image_border_width, layer1.shape[0] - image_border_width):
                 for center_x in range(image_border_width, layer1.shape[1] - image_border_width):
                     # Perform naive check of pixel's possiblity of being a local extremum
-                    if is_pixel_extremum(layer1[center_y-1:center_y+2, center_x-1:center_x+2], # NOTE: Due to slicing doing an [inclusive:exclusive]
-                                         layer2[center_y-1:center_y+2, center_x-1:center_x+2], #       operation we need to do [center -1 : center + 2]
-                                         layer3[center_y-1:center_y+2, center_x-1:center_x+2], #       to get the 3x3 array slice
-                                         threshold=threshold):
+                    if is_pixel_extremum(layer1[center_y-1:center_y+2, center_x-1:center_x+2], layer2[center_y-1:center_y+2, center_x-1:center_x+2], layer3[center_y-1:center_y+2, center_x-1:center_x+2], threshold=threshold):
+                        
+                        # NOTE: Due to slicing doing an [inclusive:exclusive]
+                        #       operation we need to do [center -1 : center + 2]
+                        #       to get the 3x3 array slice
+                        
+                        
+                        
                         # Perform subpixel approximation of the extremum to estimate the best possible keypoint localization
                         accurate_keypoint_localization_result = accurate_keypoint_localization(center_y, center_x, image_idx + 1, # +1 to get the center image in the stack
                                                                                                octave_idx, s, dog_images_in_octave, sigma, 
                                                                                                contrast_threshold, image_border_width)
                         
+                        
+                        
                         # If the approximation of the extremum is within the image
                         if accurate_keypoint_localization_result is not None:
-                            keypoint, localized_image_index = accurate_keypoint_localization_result
+                            keypoint, scale_idx = accurate_keypoint_localization_result
+                            
+                            global counter
+                            counter += 1
+                            
                             
                             # Section 5: Orientation assignment
-                            keypoints_with_orientations = orientation_assignment(keypoint, octave_idx, gaussian_images[octave_idx][localized_image_index])
+                            keypoints_with_orientations = orientation_assignment(keypoint, octave_idx, gaussian_images[octave_idx][scale_idx])
                             
                             # Save the keypoints with orientations to the final keypoints list
                             for keypoint_with_orientation in keypoints_with_orientations:
@@ -481,13 +502,136 @@ def get_scale_space_extrema(gaussian_images, dog_images, s, sigma, image_border_
     return keypoints
 
 
-def orientation_assignment(keypoint, octave_idx, gaussian_image, radius_factor=3, num_bins=36, peak_ratio=0.8, scale_factor=1.5):
+def orientation_assignment(keypoint: cv2.KeyPoint, octave_idx: int, gaussian_image: np.ndarray, radius_factor=3, num_bins=36, peak_ratio=0.8, scale_factor=1.5):
+    """Assigns orientation(s) to a keypoint based on the local image gradient directions.
+    Parameters:
+        keypoint (cv2.KeyPoint): The keypoint for which the orientation is being assigned.
+        octave_idx (int): The index of the octave in which the keypoint was detected.
+        gaussian_image (np.ndarray): The Gaussian-blurred image in which the keypoint was detected.
+        radius_factor (int, optional): The factor used to determine the radius of the region around the keypoint. Default is 3.
+        num_bins (int, optional): The number of bins in the orientation histogram. Default is 36.
+        peak_ratio (float, optional): The ratio used to determine the threshold for peak detection in the histogram. Default is 0.8.
+        scale_factor (float, optional): The factor used to scale the keypoint size. Default is 1.5.
+    Returns:
+        keypoints_with_orientations (list[cv2.KeyPoint]): A list of keypoints with assigned orientations.
+    """
+    
     # Section 5: Orientation assignment
-    
-    
-    
-    return None
+    # As described in Section 5 of the SIFT paper (Lowe, 2004), 
+    # this step assigns an orientation to each keypoint based on the local image gradient.
+    # The goal is to make keypoints invariant to rotation, ensuring the descriptor remains robust
+    # under different orientations of the image.
 
+    keypoints_with_orientations = []  # List to store keypoints with their assigned orientations.
+    image_shape = gaussian_image.shape  # Get the shape of the Gaussian-blurred image.
+
+    # The scale of the keypoint is computed based on the size and the octave index.
+    # This ensures scale invariance. The scale factor is typically 1.5 (Section 5 of the SIFT paper).
+    scale = scale_factor * keypoint.size / np.float32(2 ** (octave_idx + 1))
+
+    # The radius determines the region around the keypoint to be considered for orientation calculation.
+    # The radius is based on the scale of the keypoint and a factor (typically 3, but not described in the paper).
+    radius = int(round(radius_factor * scale))
+
+    # The weight factor is used to compute a Gaussian weight for each pixel in the region,
+    # prioritizing pixels closer to the keypoint center. This helps give more importance to gradients near the keypoint.
+    weight_factor = -0.5 / (scale ** 2) # The gaussian function is e^(-r^2/2*sigma^2), thus -1/(2*sigma^2) is the weight factor
+
+    # The raw histogram will store gradient magnitudes for different orientation bins.
+    # The number of bins is typically 36 (covering 360 degrees), and the orientation will be assigned 
+    # based on the peak in this histogram. (See Section 5 of the SIFT paper).
+    raw_histogram = np.zeros(num_bins)
+
+    # A smoothed histogram will later be used to perform peak detection.
+    smooth_histogram = np.zeros(num_bins)
+
+    # Loop over the neighborhood around the keypoint (based on the radius) to compute gradient magnitudes and orientations.
+    for i in range(-radius, radius + 1):
+        # Calculate the y-coordinate in the scale space (adjust for the current octave).
+        region_y = int(round(keypoint.pt[1] / np.float32(2 ** octave_idx))) + i
+
+        # Ensure the y-coordinate is within the image bounds.
+        if region_y > 0 and region_y < image_shape[0] - 1:
+            for j in range(-radius, radius + 1):
+                # Calculate the x-coordinate in the scale space (adjust for the current octave).
+                region_x = int(round(keypoint.pt[0] / np.float32(2 ** octave_idx))) + j
+                
+                # Ensure the x-coordinate is within the image bounds.
+                if region_x > 0 and region_x < image_shape[1] - 1:
+                    # Compute the image gradients in the x and y directions (dx, dy).
+                    # Gradient magnitudes and orientations are calculated from these values.
+                    # The use of gradients is directly mentioned in Section 5 (Lowe, 2004).
+                    dx = gaussian_image[region_y, region_x + 1] - gaussian_image[region_y, region_x - 1]
+                    dy = gaussian_image[region_y - 1, region_x] - gaussian_image[region_y + 1, region_x]
+                    
+                    # Compute the gradient magnitude.
+                    gradient_magnitude = np.sqrt(dx**2 + dy**2)
+                    
+                    # Compute the gradient orientation in degrees.
+                    gradient_orientation = np.rad2deg(np.arctan2(dy, dx))
+                    
+                    # Weight the gradient based on its distance from the keypoint.
+                    # The weight is computed using a Gaussian function, emphasizing closer pixels.
+                    weight = np.exp(weight_factor * (i ** 2 + j ** 2))
+                    
+                    # Map the gradient orientation into one of the histogram bins (36 bins for 360 degrees).
+                    histogram_index = int(round(gradient_orientation * num_bins / 360.))
+                    
+                    # Add the weighted gradient magnitude to the corresponding histogram bin.
+                    raw_histogram[histogram_index % num_bins] += weight * gradient_magnitude
+
+    # Smooth the histogram to suppress noise and make the orientation assignment more robust.
+    # As described in the SIFT paper, Lowe suggests smoothing the histogram before peak detection.
+    for n in range(num_bins):
+        # A simple smoothing operation that takes neighboring bin values into account.
+        # The smoothing formula is y
+        smooth_histogram[n] = (6 * raw_histogram[n] + 
+                            4 * (raw_histogram[n - 1] + raw_histogram[(n + 1) % num_bins]) + 
+                            raw_histogram[n - 2] + raw_histogram[(n + 2) % num_bins]) / 16.
+
+
+
+    # Find the peak of the smoothed histogram, which represents the dominant orientation.
+    # This peak corresponds to the most frequent gradient direction in the keypoint's neighborhood.
+    orientation_max = max(smooth_histogram)
+
+    # Identify all local peaks in the histogram that are above 80% of the highest peak.
+    # These peaks represent significant orientations in the keypoint's neighborhood.
+    # This process allows for assigning multiple orientations to a keypoint, improving robustness to image rotation.
+    orientation_peaks = np.where(np.logical_and(
+        smooth_histogram > np.roll(smooth_histogram, 1),
+        smooth_histogram > np.roll(smooth_histogram, -1)))[0]
+    
+
+    # Loop over all significant peaks to assign orientations to the keypoint.
+    for peak_index in orientation_peaks:
+        peak_value = smooth_histogram[peak_index]
+        
+        # Only consider peaks that are within a certain threshold of the dominant peak (peak_ratio is typically 0.8).
+        if peak_value >= peak_ratio * orientation_max:
+            # Perform quadratic interpolation to refine the orientation.
+            # This helps improve the accuracy of the peak detection (see equation (6.30) in the Stanford resource).
+            left_value = smooth_histogram[(peak_index - 1) % num_bins]
+            right_value = smooth_histogram[(peak_index + 1) % num_bins]
+            
+            # Interpolated peak index for higher precision.
+            interpolated_peak_index = (peak_index + 0.5 * (left_value - right_value) / (left_value - 2 * peak_value + right_value)) % num_bins
+            
+            # Convert the peak index back to an orientation in degrees.
+            orientation = 360. - interpolated_peak_index * 360. / num_bins
+            
+            # Ensure the orientation is within [0, 360) degrees.
+            if abs(orientation - 360.) < float_tolerance:
+                orientation = 0
+            
+            # Create a new keypoint with the assigned orientation.
+            new_keypoint = cv2.KeyPoint(*keypoint.pt, keypoint.size, orientation, keypoint.response, keypoint.octave)
+            
+            # Add the keypoint with orientation to the list.
+            keypoints_with_orientations.append(new_keypoint)
+
+    # Return the list of keypoints with assigned orientations.
+    return keypoints_with_orientations
 
 
 
@@ -496,25 +640,55 @@ def orientation_assignment(keypoint, octave_idx, gaussian_image, radius_factor=3
 
 
 if __name__ == "__main__":
-    # box = cv2.imread('/home/dreezy/azureDev/repos/ipcv-mini-project/box.png', 0)
+    s = numinterval = 3
+    sigma = 1.6
     
-    # image = box.astype('float32')
-    # base_image = image_preprocessing(box)
+    box = cv2.imread('/home/dreezy/azureDev/repos/ipcv-mini-project/resources/box.png', 0)
+    
+    image = box.astype('float32')
+    base_image = image_preprocessing(image, sigma=sigma)
     
     
-    # n_octaves = get_num_octaves(base_image.shape[:2])
-    # print(f"n_octaves {n_octaves}")
+    print("base_image.type: ", type(base_image[0][0]))
     
-    # g_kernels = get_gaussian_kernels()
-    # print(f"gaussian kernels: {g_kernels}")
+    n_octaves = get_num_octaves(base_image.shape[:2])
+    print(f"n_octaves {n_octaves}")
     
-    # g_pyramid = construct_gaussian_pyramid(base_image, n_octaves, g_kernels)
-    # print(f"pyramid lengths: {len(g_pyramid)}, {len(g_pyramid[0])}")
-    # print(g_pyramid[7][4].shape)
+    g_kernels = get_gaussian_kernels(sigma=sigma, s=s)
+    print(f"gaussian kernels: {np.round(g_kernels,7)}")
+    print("g_kern.type: ", type(g_kernels[1]))
     
-    # dog_pyramid = construct_DoG_pyramid(g_pyramid)
-    # print(f"dog lengths: {len(dog_pyramid)}, {len(dog_pyramid[0])}")
-    # print(dog_pyramid[5][2].shape)
+    g_pyramid = construct_gaussian_pyramid(base_image, n_octaves, g_kernels)
+    print(f"pyramid lengths: {len(g_pyramid)}, {len(g_pyramid[0])}")
+    print(g_pyramid[7][4].shape)
+    
+    # print("g_pyramid ", g_pyramid[0][1][2])
+    # print("g_pyramid ", g_pyramid[0][1].shape)
+    # print("g_pyramid ", g_pyramid[0][1][2].shape)
+    # print("g_pyramid.type ", type(g_pyramid[0][1][2][0]))
+    
+    dog_pyramid = construct_DoG_pyramid(g_pyramid)
+    print(f"dog lengths: {len(dog_pyramid)}, {len(dog_pyramid[0])}")
+    print(dog_pyramid[5][2].shape)
+    
+    # print("dog_image ", dog_pyramid[0][1][2])
+    # print("dog_image ", dog_pyramid[0][1].shape)
+    # print("dog_image ", dog_pyramid[0][1][2].shape)
+    # print("dog_image.type ", type(dog_pyramid[0][1][2][0]))
+    
+    keys_w_orients = get_scale_space_extrema(g_pyramid, dog_pyramid, s, sigma=sigma, image_border_width=3)
+    print(len(keys_w_orients))
+    print(keys_w_orients[0])
+    
+    box_copy = cv2.cvtColor(box.copy(), cv2.COLOR_GRAY2BGR)
+    
+    cv2.drawKeypoints(box_copy, keys_w_orients, outImage=box_copy)
+    cv2.imshow("box", box_copy)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+    
+    print("counter: ", counter)
+    
     
     # list = [1,2,3,4,5]
     # for x,y,z in zip(list[:-2], list[1:-1], list[2:], strict=True):
