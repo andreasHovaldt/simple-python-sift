@@ -100,8 +100,6 @@ def get_gaussian_kernels(sigma=1.6, s=3):
     
     return kernels_diff
 
-    
-    
 
 def construct_gaussian_pyramid(image: np.ndarray, num_octaves: int, gaussian_kernels_diff: list):
     """Generate scale-space pyramid of Gaussian images
@@ -152,7 +150,6 @@ def construct_gaussian_pyramid(image: np.ndarray, num_octaves: int, gaussian_ker
     return np.array(gaussian_pyramid, dtype=object)
 
 
-
 def construct_DoG_pyramid(gaussian_pyramid: np.ndarray):
     """Calculates the Difference-of-Gaussians (DoG), as described in section 3 of the paper.
     Functionally it identifies potential interest points that are invariant to 
@@ -194,8 +191,28 @@ def construct_DoG_pyramid(gaussian_pyramid: np.ndarray):
     return np.array(dog_pyramid, dtype=object)
 
 
-
-
+def plot_gaussian_pyramid(gaussian_pyramid: np.ndarray, save_path=None):
+    import matplotlib.pyplot as plt
+    num_octaves = len(gaussian_pyramid)
+    num_intervals = len(gaussian_pyramid[0])
+    
+    fig, axes = plt.subplots(num_octaves, num_intervals, figsize=(15, 15))
+    
+    for octave_idx, octave in enumerate(gaussian_pyramid):
+        for interval_idx, image in enumerate(octave):
+            ax = axes[octave_idx, interval_idx]
+            ax.imshow(image, cmap='gray')
+            ax.axis('off')
+            ax.set_title(f"Octave {octave_idx}, Interval {interval_idx}")
+    
+    plt.tight_layout()
+    
+    if save_path is not None:
+        plt.savefig(save_path)
+    
+    plt.show()
+    
+    
 ########################################################################################
 #####                  2 - Keypoint localization - Section 3/4/5                   #####
 # At each candidate location, a detailed model is fit to determine location and scale. #
@@ -470,27 +487,22 @@ def get_scale_space_extrema(gaussian_images, dog_images, s, sigma, image_border_
                 for center_x in range(image_border_width, layer1.shape[1] - image_border_width):
                     # Perform naive check of pixel's possiblity of being a local extremum
                     if is_pixel_extremum(layer1[center_y-1:center_y+2, center_x-1:center_x+2], layer2[center_y-1:center_y+2, center_x-1:center_x+2], layer3[center_y-1:center_y+2, center_x-1:center_x+2], threshold=threshold):
-                        
                         # NOTE: Due to slicing doing an [inclusive:exclusive]
                         #       operation we need to do [center -1 : center + 2]
                         #       to get the 3x3 array slice
-                        
-                        
                         
                         # Perform subpixel approximation of the extremum to estimate the best possible keypoint localization
                         accurate_keypoint_localization_result = accurate_keypoint_localization(center_y, center_x, image_idx + 1, # +1 to get the center image in the stack
                                                                                                octave_idx, s, dog_images_in_octave, sigma, 
                                                                                                contrast_threshold, image_border_width)
                         
-                        
-                        
                         # If the approximation of the extremum is within the image
                         if accurate_keypoint_localization_result is not None:
                             keypoint, scale_idx = accurate_keypoint_localization_result
                             
+                            # FIXME: Remove this global counter
                             global counter
                             counter += 1
-                            
                             
                             # Section 5: Orientation assignment
                             keypoints_with_orientations = orientation_assignment(keypoint, octave_idx, gaussian_images[octave_idx][scale_idx])
@@ -662,6 +674,8 @@ if __name__ == "__main__":
     print(f"pyramid lengths: {len(g_pyramid)}, {len(g_pyramid[0])}")
     print(g_pyramid[7][4].shape)
     
+    plot_gaussian_pyramid(g_pyramid, save_path="resources/gaussian_pyramid.png")
+    
     # print("g_pyramid ", g_pyramid[0][1][2])
     # print("g_pyramid ", g_pyramid[0][1].shape)
     # print("g_pyramid ", g_pyramid[0][1][2].shape)
@@ -670,6 +684,8 @@ if __name__ == "__main__":
     dog_pyramid = construct_DoG_pyramid(g_pyramid)
     print(f"dog lengths: {len(dog_pyramid)}, {len(dog_pyramid[0])}")
     print(dog_pyramid[5][2].shape)
+    
+    plot_gaussian_pyramid(dog_pyramid, save_path="resources/dog_pyramid.png")
     
     # print("dog_image ", dog_pyramid[0][1][2])
     # print("dog_image ", dog_pyramid[0][1].shape)
@@ -684,6 +700,7 @@ if __name__ == "__main__":
     
     cv2.drawKeypoints(box_copy, keys_w_orients, outImage=box_copy)
     cv2.imshow("box", box_copy)
+    cv2.imwrite("resources/box_keypoints.png", box_copy)
     cv2.waitKey(0)
     cv2.destroyAllWindows()
     
