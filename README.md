@@ -1,15 +1,15 @@
 # Introduction 
-TODO: Give a short introduction of your project. Let this section explain the objectives or the motivation behind this project. 
+Basic implementation of Scale-invariant Feature Transform (SiFT), created based on the original 2004 paper, "Distinctive Image Features from Scale-Invariant Keypoints" by David G. Lowe [[1](https://www.cs.ubc.ca/~lowe/papers/ijcv04.pdf)]. Implementation method inspired by Russ Islam [[2](https://medium.com/@russmislam/implementing-sift-in-python-a-complete-guide-part-1-306a99b50aa5)] [[3](https://medium.com/@russmislam/implementing-sift-in-python-a-complete-guide-part-2-c4350274be2b)].
 
 # Getting Started
-TODO: Guide users through getting your code up and running on their own system. In this section you can talk about:
-1.	Installation process
-2.	Software dependencies
-3.	Latest releases
-4.	API references
 
-# Build and Test
-TODO: Describe and show how to build your code and run the tests. 
+### Dependencies
+```pip install -r requirements.txt```
 
-# Contribute
-TODO: Explain how other users and developers can contribute to make your code better. 
+### Usage
+```py
+from sift import sift
+kpts1, dscpts1 = sift(greyscale_image)
+```
+
+An example of how to use the sift function can also be seen in the ```sift_matcher.py``` script, which matches keypoints and descriptors between two images.
