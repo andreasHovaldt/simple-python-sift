@@ -4,12 +4,9 @@
 ########################################################################################
 
 import numpy as np
-import matplotlib.pyplot as plt
 import cv2
-import math
 
 float_tolerance = 1e-7
-counter = 0
 
 ###################################################################################
 ######             1 - Scale-space extrema detection - Section 3              #####
@@ -19,6 +16,17 @@ counter = 0
 ###################################################################################
 
 def image_preprocessing(image: np.ndarray, sigma=1.6, assumed_sigma=0.5) -> np.ndarray:
+    """Pre-process the input image, returning the base image for the first octave of the gaussian pyramid
+
+    Args:
+        image (np.ndarray): The input image as a greyscale 32-bit float array.
+        sigma (float): Blurring value. Defaults to 1.6.
+        assumed_sigma (float): The assumed blur of the input image. Defaults to 0.5.
+
+    Returns:
+        base_image (np.ndarray): The base image for the first octave of the gaussian pyramid
+    """
+    
     # Based on section 3.3
     # - sigma (desired blur) in paper = 1.6
     # - assumed sigma (assumed blur of original image) in paper = 0.5
@@ -40,9 +48,9 @@ def image_preprocessing(image: np.ndarray, sigma=1.6, assumed_sigma=0.5) -> np.n
     sigma_difference = np.sqrt(sigma**2 - doubled_assumed_sigma**2)
     
     # Blurring the image
-    blurred_image = cv2.GaussianBlur(image, (0,0), sigmaX=sigma_difference, sigmaY=sigma_difference)
+    base_image = cv2.GaussianBlur(image, (0,0), sigmaX=sigma_difference, sigmaY=sigma_difference)
     
-    return blurred_image
+    return base_image
 
 
 def get_num_octaves(image_shape: tuple, min_allowed_dim=3) -> int:
@@ -50,7 +58,7 @@ def get_num_octaves(image_shape: tuple, min_allowed_dim=3) -> int:
 
     Args:
         image_shape (tuple): Height and width shape of the input image
-        min_allowed_dim (int, optional): The smallest allowed image dimension of an ocatave image. Defaults to 3, based on Section 3.1 and Figure 2.
+        min_allowed_dim (int): The smallest allowed image dimension of an ocatave image. Defaults to 3, based on Section 3.1 and Figure 2.
 
     Returns:
         num_octaves (int): Number of octaves for the input image
@@ -75,10 +83,10 @@ def get_gaussian_kernels(sigma=1.6, s=3):
 
     Args:
         sigma (float): The initial sigma for the base level in the octave (typically 1.6, as suggested in section 3.3).
-        s (int, optional): Number of intervals per octave (default 3, as suggested in section 3.2).
+        s (int): Number of intervals per octave (default 3, as suggested in section 3.2).
 
     Returns:
-        kernels_diff (list): A list of sigma difference values representing the additional blur applied at each interval.
+        kernels_diff (list[float]): A list of sigma difference values representing the additional blur applied at each interval.
     """
     
     # Section 3.2: "Highest repeatability is obtained when sampling 3 scales per octave"
@@ -191,14 +199,14 @@ def construct_DoG_pyramid(gaussian_pyramid: np.ndarray):
     return np.array(dog_pyramid, dtype=object)
 
 
-def plot_gaussian_pyramid(gaussian_pyramid: np.ndarray, save_path=None):
+def plot_pyramid(pyramid: np.ndarray, save_path=None):
     import matplotlib.pyplot as plt
-    num_octaves = len(gaussian_pyramid)
-    num_intervals = len(gaussian_pyramid[0])
+    num_octaves = len(pyramid)
+    num_intervals = len(pyramid[0])
     
     fig, axes = plt.subplots(num_octaves, num_intervals, figsize=(15, 15))
     
-    for octave_idx, octave in enumerate(gaussian_pyramid):
+    for octave_idx, octave in enumerate(pyramid):
         for interval_idx, image in enumerate(octave):
             ax = axes[octave_idx, interval_idx]
             ax.imshow(image, cmap='gray')
@@ -237,7 +245,7 @@ def is_pixel_extremum(first_subimage: np.ndarray, second_subimage: np.ndarray, t
     # Set the center pixel value
     center_pixel_value = second_subimage[1, 1]
     
-    # Check if the center pixel value is greater than the threshold
+    # Check if the center pixel value is greater than the threshold to reject any pixels with very low values
     if abs(center_pixel_value) > threshold:
         
         # Check if the center pixel value is greater than than all its neighbors
@@ -288,7 +296,6 @@ def get_center_difference_gradient(neighbor_array: np.ndarray) -> np.ndarray:
     
     
     # Calculating the gradients:
-    # TODO: Test if multiplying by 0.5 instead of dividing by 2 makes a difference
     # First axis: s
     ds = (neighbor_array[2,1,1] - neighbor_array[0,1,1]) / 2
     
@@ -347,7 +354,6 @@ def get_center_difference_hessian(neighbor_array: np.ndarray) -> np.ndarray:
     dxx = neighbor_array[1, 1, 2] - 2*neighbor_array[1, 1, 1] + neighbor_array[1, 1, 0]
     
     # Mixed variable second-order partial derivatives
-    # TODO: Test if multiplying by 0.25 makes a difference
     dxy = (neighbor_array[1, 2, 2] - neighbor_array[1, 2, 0] - neighbor_array[1, 0, 2] + neighbor_array[1, 0, 0]) / 4
     dxs = (neighbor_array[2, 1, 2] - neighbor_array[2, 1, 0] - neighbor_array[0, 1, 2] + neighbor_array[0, 1, 0]) / 4
     dys = (neighbor_array[2, 2, 1] - neighbor_array[2, 0, 1] - neighbor_array[0, 2, 1] + neighbor_array[0, 0, 1]) / 4
@@ -463,9 +469,20 @@ def accurate_keypoint_localization(center_y: int, center_x: int, image_idx: int,
     return None
 
 
-def get_scale_space_extrema(gaussian_images, dog_images, s, sigma, image_border_width, contrast_threshold=0.04):
-    # TODO: Add docstring
-    
+def get_scale_space_extrema(gaussian_images: np.ndarray, dog_images: np.ndarray, s: int, sigma: float, image_border_width: int, contrast_threshold=0.04) -> list[cv2.KeyPoint]:
+    """Detects the scale-space extrema in the Difference of Gaussian (DoG) images. Returning the keypoints with orientations.
+
+    Args:
+        gaussian_images (np.ndarray): The gaussian pyramid images.
+        dog_images (np.ndarray): The Difference of Gaussian (DoG) pyramid images.
+        s (int): Number of intervals per octave.
+        sigma (float): The initial sigma value used in the scale-space.
+        image_border_width (int): The width of the image border.
+        contrast_threshold (float): The threshold for contrast. Defaults to 0.04.
+
+    Returns:
+        keypoints (list[cv2.KeyPoint]): A list of keypoints with assigned orientations.
+    """
     # Accurate keypoint localization, section 4+5 of the paper
     # s -> number of intervals
     
@@ -480,7 +497,7 @@ def get_scale_space_extrema(gaussian_images, dog_images, s, sigma, image_border_
     for octave_idx, dog_images_in_octave in enumerate(dog_images):
         # Go through each image in the current octave, the images are stacked following Figure 2 in the paper
         for image_idx, (layer1, layer2, layer3) in enumerate(zip(dog_images_in_octave[:-2], dog_images_in_octave[1:-1], dog_images_in_octave[2:])):
-            assert layer1.shape == layer2.shape == layer3.shape, "Layers of DoG stack did not have same shape" # FIXME: If it works, delete this safety check
+            assert layer1.shape == layer2.shape == layer3.shape, "Layers of DoG stack did not have same shape"
             # Go through each pixel (x,y) of the images, the current pixel is considered the "center pixel" 
             # Each center pixel is tested for its possiblity of being an extrema
             for center_y in range(image_border_width, layer1.shape[0] - image_border_width):
@@ -499,10 +516,6 @@ def get_scale_space_extrema(gaussian_images, dog_images, s, sigma, image_border_
                         # If the approximation of the extremum is within the image
                         if accurate_keypoint_localization_result is not None:
                             keypoint, scale_idx = accurate_keypoint_localization_result
-                            
-                            # FIXME: Remove this global counter
-                            global counter
-                            counter += 1
                             
                             # Section 5: Orientation assignment
                             keypoints_with_orientations = orientation_assignment(keypoint, octave_idx, gaussian_images[octave_idx][scale_idx])
@@ -530,10 +543,10 @@ def orientation_assignment(keypoint: cv2.KeyPoint, octave_idx: int, gaussian_ima
         keypoint (cv2.KeyPoint): The keypoint for which the orientation is being assigned.
         octave_idx (int): The index of the octave in which the keypoint was detected.
         gaussian_image (np.ndarray): The Gaussian-blurred image in which the keypoint was detected.
-        radius_factor (int, optional): The factor used to determine the radius of the region around the keypoint. Default is 3.
-        num_bins (int, optional): The number of bins in the orientation histogram. Default is 36.
-        peak_ratio (float, optional): The ratio used to determine the threshold for peak detection in the histogram. Default is 0.8.
-        scale_factor (float, optional): The factor used to scale the keypoint size. Default is 1.5.
+        radius_factor (int): The factor used to determine the radius of the region around the keypoint. Default is 3.
+        num_bins (int): The number of bins in the orientation histogram. Default is 36.
+        peak_ratio (float): The ratio used to determine the threshold for peak detection in the histogram. Default is 0.8.
+        scale_factor (float): The factor used to scale the keypoint size. Default is 1.5.
     Returns:
         keypoints_with_orientations (list[cv2.KeyPoint]): A list of keypoints with assigned orientations.
     """
@@ -733,6 +746,12 @@ def unpackOctave(keypoint: cv2.KeyPoint):
 def generateDescriptors(keypoints: list[cv2.KeyPoint], gaussian_images: np.ndarray, window_width=4, num_bins=8, scale_multiplier=3, descriptor_max_value=0.2):
     """Generate descriptors for each keypoint
     """
+    
+    """Generate descriptors for each keypoint, as described in Section 6 of the SIFT paper.
+
+    Returns:
+        descriptors (np.ndarray): An array of shape (num_keypoints, num_bins * window_width * window_width) containing the descriptors.
+    """
 
     descriptors = []
 
@@ -824,76 +843,3 @@ def generateDescriptors(keypoints: list[cv2.KeyPoint], gaussian_images: np.ndarr
         descriptors.append(descriptor_vector)
     return np.array(descriptors, dtype='float32')
 
-
-
-
-
-
-
-
-
-
-
-
-if __name__ == "__main__":
-    s = numinterval = 3
-    sigma = 1.6
-    
-    box = cv2.imread('/home/dreezy/azureDev/repos/ipcv-mini-project/resources/box.png', 0)
-    
-    image = box.astype('float32')
-    base_image = image_preprocessing(image, sigma=sigma)
-    
-    
-    print("base_image.type: ", type(base_image[0][0]))
-    
-    n_octaves = get_num_octaves(base_image.shape[:2])
-    print(f"n_octaves {n_octaves}")
-    
-    g_kernels = get_gaussian_kernels(sigma=sigma, s=s)
-    print(f"gaussian kernels: {np.round(g_kernels,7)}")
-    print("g_kern.type: ", type(g_kernels[1]))
-    
-    g_pyramid = construct_gaussian_pyramid(base_image, n_octaves, g_kernels)
-    print(f"pyramid lengths: {len(g_pyramid)}, {len(g_pyramid[0])}")
-    print(g_pyramid[7][4].shape)
-    
-    # plot_gaussian_pyramid(g_pyramid, save_path="resources/gaussian_pyramid.png")
-    
-    # print("g_pyramid ", g_pyramid[0][1][2])
-    # print("g_pyramid ", g_pyramid[0][1].shape)
-    # print("g_pyramid ", g_pyramid[0][1][2].shape)
-    # print("g_pyramid.type ", type(g_pyramid[0][1][2][0]))
-    
-    dog_pyramid = construct_DoG_pyramid(g_pyramid)
-    print(f"dog lengths: {len(dog_pyramid)}, {len(dog_pyramid[0])}")
-    print(dog_pyramid[5][2].shape)
-    
-    # plot_gaussian_pyramid(dog_pyramid, save_path="resources/dog_pyramid.png")
-    
-    # print("dog_image ", dog_pyramid[0][1][2])
-    # print("dog_image ", dog_pyramid[0][1].shape)
-    # print("dog_image ", dog_pyramid[0][1][2].shape)
-    # print("dog_image.type ", type(dog_pyramid[0][1][2][0]))
-    
-    keys_w_orients = get_scale_space_extrema(g_pyramid, dog_pyramid, s, sigma=sigma, image_border_width=3)
-    print(len(keys_w_orients))
-    print(keys_w_orients[0])
-    
-    
-    box_copy = cv2.cvtColor(box.copy(), cv2.COLOR_GRAY2BGR)
-    
-    cv2.drawKeypoints(box_copy, keys_w_orients, outImage=box_copy)
-    cv2.imshow("box", box_copy)
-    cv2.imwrite("resources/box_keypoints.png", box_copy)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
-    
-    print("counter: ", counter)
-    
-    
-    # list = [1,2,3,4,5]
-    # for x,y,z in zip(list[:-2], list[1:-1], list[2:], strict=True):
-    #     print(x,y,z)
-    
-    pass
